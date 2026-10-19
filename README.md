@@ -18,10 +18,11 @@ This repository is a working reference. The documents below can be read in order
 | 06 | [SSH-CONFIG-RECIPES.MD](06-SSH-CONFIG-RECIPES.MD) | Practical `~/.ssh/config` patterns: per-service aliases, wildcards, multiplexing, multi-identity setups |
 | 07 | [DESKTOP-GUI-WORKFLOWS.MD](07-DESKTOP-GUI-WORKFLOWS.MD) | Native laptop applications talking to remote services: database GUIs, sshfs mounts, API clients, monitoring dashboards |
 | 08 | [SECURITY.MD](08-SECURITY.MD) | Threat model, key hygiene, tunnel exposure, agent-forwarding caveats, defense-in-depth |
+| 09 | [CLASH-FREE-DEV.MD](09-CLASH-FREE-DEV.MD) | Running many projects on one dev box: registered base ports, loopback binding, per-project databases, cookie and storage isolation, a copyable launcher |
 
 ## How to use this repository
 
-If new to remote-first development, read in order from 01 to 08. The first three documents establish the model; 04 and 05 are practical safety; 06 and 07 are recipes; 08 grounds the security posture.
+If new to remote-first development, read in order from 01 to 09. The first three documents establish the model; 04 and 05 are practical safety; 06 and 07 are recipes; 08 grounds the security posture; 09 keeps several projects from colliding on one box.
 
 If looking for a specific recipe, jump directly. Each document is self-contained, with cross-references where context helps.
 
