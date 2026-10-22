@@ -14,7 +14,7 @@ When several projects share one remote dev box, they collide in five places: por
 | **Exposure** | A dev server bound to all interfaces is on the box's public address; only the firewall stands between it and the internet. | Dev servers bind `127.0.0.1`. Editor port forwarding and SSH tunnels connect from the box itself, so nothing needs more. |
 | **Databases** | Two projects both publish Postgres on 5432, or share a container and its data. | One Compose project per repo, each publishing its database on its own loopback port. |
 | **Browser state** | Cookies are per host, not per port: two apps with the same session-cookie name on `localhost` overwrite each other's login. Storage (localStorage, IndexedDB) is per origin, port included: an app that drifts from :5280 to :5281 seems to lose its local data. | Prefix auth cookies per app. Keep the web port stable (the registry's job), and treat a fallback port as a warning, not a mode. |
-| **Leftover processes** | A `make dev` from an earlier session still holds the port, so the new one drifts. | The launcher names the port it wanted and how to find its holder (`lsof -i :<port>`). Stop the old one rather than living on the fallback. |
+| **Leftover processes** | A `make dev` from an earlier session still holds the port, so the new one drifts. The usual cause is an editor terminal killed hard (laptop sleep, the VS Code server reaping it): the kernel detaches the terminal without a reliable SIGHUP, and the whole dev tree runs on as orphans. | The launcher stops everything it started when its terminal disappears, so a dead session leaves nothing behind. If a holder remains anyway, the launcher names the port and how to find it (`lsof -i :<port>`). |
 
 ## Ports: register a base, fall back loudly
 
@@ -44,12 +44,13 @@ On a dev-only box the firewall then needs nothing but SSH (22) open. See [SECURI
 
 ## The launcher
 
-A dependency-free Node script, run by `make dev` or `pnpm dev`. It picks ports, warns on fallback, passes ports through the environment, and forwards Ctrl-C to the dev servers. Adjust the four constants and the `spawn` command to the project.
+A dependency-free Node script, run by `make dev` or `pnpm dev`. It picks ports, warns on fallback, passes ports through the environment, forwards Ctrl-C to the dev servers, and stops the whole tree quietly when its terminal dies. Adjust the four constants and the `spawn` command to the project.
 
 ```js
 // scripts/dev.mjs: clash-free dev launcher. See remote-dev 09-CLASH-FREE-DEV.MD.
 import net from "node:net"
 import { spawn } from "node:child_process"
+import { readFileSync, readdirSync } from "node:fs"
 
 const NAME = "myapp"     // shown in the banner
 const WEB_BASE = Number(process.env.WEB_PORT) || 5290 // the registered base port
@@ -96,10 +97,80 @@ const child = spawn("pnpm", ["-r", "--parallel", "dev"], {
 })
 process.on("SIGINT", () => child.kill("SIGINT"))
 process.on("SIGTERM", () => child.kill("SIGTERM"))
-child.on("exit", (code) => process.exit(code ?? 0))
+process.on("SIGHUP", () => stopTree())
+// While stopping, stopTree() owns the exit, so stragglers still get SIGKILL.
+child.on("exit", (code) => {
+  if (!stopping) process.exit(code ?? 0)
+})
+
+// A dev server must not outlive its terminal. A terminal killed hard is
+// detached without a reliable SIGHUP, so watch for it to disappear and stop
+// everything we started. Linux-only (/proc); elsewhere this is a no-op.
+const ttyAtStart = procStat("self")?.tty
+if (ttyAtStart && ttyAtStart !== "0") {
+  setInterval(() => {
+    if (procStat("self")?.tty === "0") stopTree()
+  }, 1000).unref()
+}
+
+/** ppid and tty_nr from /proc/<pid>/stat, or null off Linux / once the pid is gone. */
+function procStat(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+    // Fields after the parenthesised command name, which may itself hold spaces.
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+    return { ppid: Number(fields[1]), tty: fields[4] }
+  } catch {
+    return null
+  }
+}
+
+/** Every live descendant of `root`, found by walking /proc's parent links. */
+function descendants(root) {
+  const children = new Map()
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue
+    const stat = procStat(entry)
+    if (!stat) continue
+    if (!children.has(stat.ppid)) children.set(stat.ppid, [])
+    children.get(stat.ppid).push(Number(entry))
+  }
+  const found = []
+  const queue = [root]
+  while (queue.length) {
+    for (const pid of children.get(queue.shift()) ?? []) {
+      found.push(pid)
+      queue.push(pid)
+    }
+  }
+  return found
+}
+
+/** Stop every process this launcher started, then exit. Quiet: the terminal may be gone. */
+let stopping = false
+function stopTree() {
+  if (stopping) return
+  stopping = true
+  const signalAll = (signal) => {
+    for (const pid of descendants(process.pid)) {
+      try {
+        process.kill(pid, signal)
+      } catch {
+        // Already exited.
+      }
+    }
+  }
+  signalAll("SIGTERM")
+  setTimeout(() => {
+    signalAll("SIGKILL")
+    process.exit(0)
+  }, 2000)
+}
 ```
 
 Probing `0.0.0.0` detects a holder on any interface, including one bound only to loopback. The scan is a convenience; `strictPort` in the dev server is the guarantee.
+
+The teardown signals only the launcher's own descendants, found through `/proc`, never its process group, which can include whatever invoked it. It is armed only when the launcher starts with a terminal, so CI and other non-interactive runs never trip it.
 
 ## Checklist for a new project
 
